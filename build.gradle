@@ -1,0 +1,47 @@
+plugins {
+    id 'java'
+}
+
+group = 'org.dsucs'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+jar {
+    manifest {
+        attributes(
+                'Main-Class': 'org.dsucs.console.EngineUi'
+        )
+    }
+}
+
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // JUnit 5 API and Engine
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0'
+
+    // Explicitly add the launcher (Required for Gradle 8.3+ or Spring Boot 3.x)
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+//dependencies {
+//    // JUnit 5 Platform
+//    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+//
+//    // Mockito Inline (Required for Mocking Static Methods in Java 8)
+//    testImplementation 'org.mockito:mockito-inline:4.11.0'
+//
+//    // JUnit 5 extension for Mockito
+//    testImplementation 'org.mockito:mockito-junit-jupiter:4.11.0'
+//}
