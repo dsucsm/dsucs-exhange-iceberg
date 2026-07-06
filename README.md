@@ -411,3 +411,25 @@ part of the same iceberg order.
 The owner of the order is the only participant knowing both the hidden and visible order codes, allowing them to retain
 full “view and do” capability.
 
+
+## Runtime options and testing
+
+The engine supports a small runtime option to enable LSE-style aggregated trade dissemination (single-line 5TG messages) for resting participants that are hit multiple times during processing of a single incoming order.
+
+- To enable aggregation set the system property `lse.aggregate=true` when running the JVM. Example:
+
+```bash
+java -Dlse.aggregate=true -jar dsucs-exhange-iceberg-1.0-SNAPSHOT.jar < test02.txt
+```
+
+When enabled the compact trades output will emit lines like:
+
+```
+5TG <restingId>: <buyId>,<sellId>,<price>,<qty>; <buyId>,<sellId>,<price>,<qty>
+```
+
+The default behavior is unchanged (one `trade` line per match). Unit tests in `src/test/java/org/dsucs/engine` cover both modes.
+
+The compact `printOrders` layout aims to match the README examples. Tests assert the header `Buyers             | Sellers` and that rows align with the numeric layout shown in examples.
+
+

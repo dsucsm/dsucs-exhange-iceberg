@@ -63,8 +63,9 @@ public class OrderBookImpl implements OrderBook {
                 // For printing /auditing of matched orders
                 String buyOrderId = incoming.side == Side.BUY ? incoming.id : resting.id;
                 String sellOrderId = incoming.side == Side.SELL ? incoming.id : resting.id;
-                recentTrades.add(new Trade(buyOrderId, sellOrderId, bestPrice, tradeVol));
-                allTrades.add(new Trade(buyOrderId, sellOrderId, bestPrice, tradeVol));
+                boolean aggressorIsBuy = incoming.side == Side.BUY;
+                recentTrades.add(new Trade(buyOrderId, sellOrderId, bestPrice, tradeVol, aggressorIsBuy));
+                allTrades.add(new Trade(buyOrderId, sellOrderId, bestPrice, tradeVol, aggressorIsBuy));
             }
             if (queue.isEmpty()) {
                 it.remove();
@@ -82,6 +83,39 @@ public class OrderBookImpl implements OrderBook {
         asks.clear();
         recentTrades.clear();
         allTrades.clear();
+    }
+
+    // Package-visible accessors for testing / inspection
+    List<Trade> getRecentTrades() {
+        return Collections.unmodifiableList(recentTrades);
+    }
+
+    List<Trade> getAllTrades() {
+        return Collections.unmodifiableList(allTrades);
+    }
+
+    /**
+     * Returns a snapshot of the bids map: price -> list of orders (in queue order).
+     * Package-private for testing/inspection.
+     */
+    java.util.Map<Integer, java.util.List<Order>> getBidsSnapshot() {
+        java.util.Map<Integer, java.util.List<Order>> snap = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<Integer, Queue<Order>> e : bids.entrySet()) {
+            snap.put(e.getKey(), new ArrayList<>(e.getValue()));
+        }
+        return java.util.Collections.unmodifiableMap(snap);
+    }
+
+    /**
+     * Returns a snapshot of the asks map: price -> list of orders (in queue order).
+     * Package-private for testing/inspection.
+     */
+    java.util.Map<Integer, java.util.List<Order>> getAsksSnapshot() {
+        java.util.Map<Integer, java.util.List<Order>> snap = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<Integer, Queue<Order>> e : asks.entrySet()) {
+            snap.put(e.getKey(), new ArrayList<>(e.getValue()));
+        }
+        return java.util.Collections.unmodifiableMap(snap);
     }
 
     // For printing/displaying orders
@@ -102,11 +136,33 @@ public class OrderBookImpl implements OrderBook {
         printTrades(opt);
         switch (opt) {
             case COMPACT:
-                System.out.printf("%10s%1s %8s | %-8s %10s%1s\n", "Buyers", "", "", "", "Sellers", "");
+                // Exact README compact formatting:
+                // Header: "Buyers             | Sellers"
+                System.out.println("Buyers             | Sellers");
                 for (int i = 0; i < maxRows; i++) {
-                    String bidPart = (i < bidRows.size()) ? String.format("%,10d%-1s %8s", bidRows.get(i).visibleVolume, bidRows.get(i).isIceberg() ? iceChar : " ", bidRows.get(i).price) : String.format("%-20s", "");
-                    String askPart = (i < askRows.size()) ? String.format("%-8s %,10d%1s", askRows.get(i).price, askRows.get(i).visibleVolume, askRows.get(i).isIceberg() ? iceChar : "") : " ";
-                    System.out.println(bidPart + " | " + askPart);
+                    String left;
+                    if (i < bidRows.size()) {
+                        Order b = bidRows.get(i);
+                        String vol = String.format("%,d", b.visibleVolume);
+                        String ice = b.isIceberg() ? iceChar : "";
+                        // left: volume (right aligned width 9 incl commas) + space + price (right aligned width 3) + optional ice
+                        left = String.format("%9s %3d%s", vol, b.price, ice);
+                    } else {
+                        left = String.format("%13s", "");
+                    }
+
+                    String right;
+                    if (i < askRows.size()) {
+                        Order a = askRows.get(i);
+                        String vol = String.format("%,d", a.visibleVolume);
+                        String ice = a.isIceberg() ? iceChar : "";
+                        // right: price (right aligned 3) + space + volume (right aligned 9 incl commas) + ice
+                        right = String.format("%3d %9s%s", a.price, vol, ice);
+                    } else {
+                        right = "";
+                    }
+
+                    System.out.println(String.format("%13s | %s", left, right));
                 }
                 break;
             case COMPREHENSIVE:
@@ -126,8 +182,46 @@ public class OrderBookImpl implements OrderBook {
         switch (opt) {
             case COMPACT: // Recent trades only
                 if (recentTrades.isEmpty()) return;
-                for (Trade m : recentTrades) {
-                    System.out.printf("trade %s,%s,%d,%d\n", m.buyOrderId, m.sellOrderId, m.price, m.quantity);
+                String aggFlag = System.getProperty("lse.aggregate");
+                boolean aggregate = aggFlag != null && aggFlag.equalsIgnoreCase("true");
+                if (aggregate) {
+                    // Group by resting sell id and resting buy id to allow symmetric aggregation.
+                    // Group trades by the resting participant id (the side that was NOT aggressor)
+                    Map<String, List<Trade>> restingGroups = new LinkedHashMap<>();
+                    for (Trade m : recentTrades) {
+                        String restingId = m.aggressorIsBuy ? m.sellOrderId : m.buyOrderId;
+                        restingGroups.computeIfAbsent(restingId, k -> new ArrayList<>()).add(m);
+                    }
+
+                    Set<String> printedComposite = new HashSet<>();
+
+                    // Aggregate repeated resting participants using LSE-style 5TG single-message format
+                    // Format: 5TG <restingId>: <buyOrderId>,<sellOrderId>,<price>,<qty>; <...>
+                    for (Map.Entry<String, List<Trade>> e : restingGroups.entrySet()) {
+                        List<Trade> list = e.getValue();
+                        if (list.size() > 1) {
+                            System.out.print("5TG " + e.getKey() + ": ");
+                            for (int i = 0; i < list.size(); i++) {
+                                Trade t = list.get(i);
+                                System.out.print(String.format("%s,%s,%d,%d", t.buyOrderId, t.sellOrderId, t.price, t.quantity));
+                                if (i < list.size() - 1) System.out.print("; ");
+                                printedComposite.add(t.buyOrderId + ":" + t.sellOrderId + ":" + t.price + ":" + t.quantity);
+                            }
+                            System.out.print("\\n");
+                        }
+                    }
+
+                    // Print remaining individual trades that were not part of any aggregated group
+                    for (Trade t : recentTrades) {
+                        String key = t.buyOrderId + ":" + t.sellOrderId + ":" + t.price + ":" + t.quantity;
+                        if (!printedComposite.contains(key)) {
+                            System.out.printf("trade %s,%s,%d,%d\n", t.buyOrderId, t.sellOrderId, t.price, t.quantity);
+                        }
+                    }
+                } else {
+                    for (Trade m : recentTrades) {
+                        System.out.printf("trade %s,%s,%d,%d\n", m.buyOrderId, m.sellOrderId, m.price, m.quantity);
+                    }
                 }
                 break;
             case COMPREHENSIVE: // All trades
